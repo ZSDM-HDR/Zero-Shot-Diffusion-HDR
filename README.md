@@ -9,7 +9,7 @@ Please follow the instructions of [ControlNet](https://github.com/lllyasviel/Con
 ## Prepare Datasets and Pre-Trained Models
 In our paper, we use the high-resolution part of [Flickr2K](https://github.com/limbee/NTIRE2017) dataset as the training set. To prepare the training data, you should first generate the MSCN maps and blurred luma maps following the instructions in our paper, and put them in `training/Flickr2K/source/` and `training/Flickr2K/source1/` respectively. The original images should be put in `training/Flickr2K/target/`.
 
-Then, download a pre-trained model ([StableDiffusion](https://huggingface.co/runwayml/stable-diffusion-v1-5/tree/main) or [ControlNet](https://github.com/lllyasviel/ControlNet)), and put it in `my_model_weights/`, change `resume_path` in `train.py`.
+Then, download a pre-trained model ([StableDiffusion](https://huggingface.co/runwayml/stable-diffusion-v1-5/tree/main) or [ControlNet](https://github.com/lllyasviel/ControlNet)), and put it in `my_model_weights/`, then change `resume_path` in `train.py`.
 
 ## Train
 `python train.py`
@@ -19,7 +19,7 @@ To train the basic model, use `models/cldm_v15.yaml` as the config file.
 To fine tune the model with decoding-encoding process, use `models/cldm_v15_ftenc.yaml` as the config file.
 
 ## Test
-Put the MSCN maps, the bluured luma maps, and the original images in `test_imgs/` as the example test image does. Use `models/cldm_v15_inference.yaml` as the config file.
+Put the MSCN maps, the blured luma maps, and the original images in `test_imgs/` as the example test image does. Use `models/cldm_v15_inference.yaml` as the config file.
 
 `python test.py`
 
