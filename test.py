@@ -2,13 +2,13 @@
 
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 from share import *
 import config
+import argparse
 
 import cv2
 import einops
-#import gradio as gr
 import numpy as np
 import torch
 import random
@@ -17,35 +17,42 @@ from pytorch_lightning import seed_everything
 from annotator.util import resize_image, HWC3
 from cldm.model import create_model, load_state_dict
 from cldm.ddim_hacked_my_encdec import DDIMSampler
-#from cldm.ddim_hacked import DDIMSampler
-from torchvision.utils import save_image
 import torch
 import os
 
 
+#=================================params
+parser = argparse.ArgumentParser()
+parser.add_argument('-input_path', help='the folder of MSCN maps', default='./test_imgs/', type=str)  
+parser.add_argument('-output_path', help='the folder for output images', default='./test_imgs_output/', type=str)
+parser.add_argument('-model_yaml_path', help='the path of the model configuration file', default='./models/cldm_v15_inference.yaml', type=str)
+parser.add_argument('-model_weight_path', help='the path of the model weight', default='./model_weights/last.ckpt', type=str)
+parser.add_argument('-ddim_steps', default=20, type=int)    #recommend: 20
+parser.add_argument('-random_seed', default=2, type=int)
+parser.add_argument('-guess_mode', default=False, type=bool)
+parser.add_argument('-scale', help='classifier-free guidance hyperparam', default=9.0, type=float)
+parser.add_argument('-strength', default=1.0, type=float)
+parser.add_argument('-post_processing', help='0: no post-processing, 1: simple processing; 2: smoothed gain ratio', default=1, type=int)   #2 is recommend for the LVZHDR dataset.
+parser.add_argument('-norm_hdr_first', help='whether to normalize the hdr image before processing', default=True, type=bool)    #The impact of different norm strategies is quite minimal.
+#====================================
+args = parser.parse_args()
+
 #input sources
-input_mscn_path = 'test_imgs/test_mscn_input'
-
-
 prompt = ''
 a_prompt = ''
 n_prompt = ''
-num_samples = 1     #how many images will be  generated
+num_samples = 1     #how many images will be generated
 image_resolution = 640  
-ddim_steps = 20
-guess_mode = False
-strength = 1.0  
-scale = 9.0
-seed = 2
+ddim_steps = args.ddim_steps
+guess_mode = args.guess_mode
+strength = args.strength  
+scale = args.scale
+seed = args.random_seed
 eta = 0.0
 
-
 #instantiate the model
-
-model = create_model('./models/cldm_v15_inference.yaml').cpu()    #config for inference
-
-
-model.load_state_dict(load_state_dict('./my_model_weights/enc_weights_ft/last.ckpt', location='cuda'),strict=False)   #best
+model = create_model(args.model_yaml_path).cpu()    #config for inference
+model.load_state_dict(load_state_dict(args.model_weight_path, location='cuda'),strict=False)   #best
 model = model.cuda()
 ddim_sampler = DDIMSampler(model)
 
@@ -81,7 +88,7 @@ def process(ori_mscn, mscn_map, luma_map, prompt, a_prompt, n_prompt, num_sample
             model.low_vram_shift(is_diffusing=True)
 
         model.control_scales = [strength * (0.825 ** float(12 - i)) for i in range(13)] if guess_mode else ([strength] * 13)  # Magic number. IDK why. Perhaps because 0.825**12<0.01 but 0.826**12>0.01
-        samples, intermediates = ddim_sampler.sample(ori_mscn, ddim_steps, num_samples,       # ===== TBD: ori img
+        samples, intermediates = ddim_sampler.sample(ori_mscn, ddim_steps, num_samples,       
                                                      shape, cond, verbose=False, eta=eta,
                                                      unconditional_guidance_scale=scale,
                                                      unconditional_conditioning=un_cond)
@@ -219,17 +226,39 @@ def mscn(isrgb, input_img, ksize, c):  #input an RGB image
     struct_norm = (struct - struct.min()) / (struct.max() - struct.min())
     return struct,struct_norm, mu, sigma
 
-mscn_names = os.listdir(input_mscn_path)
-for mscn_name in mscn_names:
-    mscn_map = cv2.imread('./test_imgs/test_mscn_input/' + mscn_name)
-    luma_map = cv2.imread('./test_imgs/test_luma_input/' + mscn_name)    
-    ori_img  = cv2.imread('./test_imgs/test_orihdr_input/' + mscn_name.replace('png', 'hdr'), flags = cv2.IMREAD_ANYDEPTH)
+def simple_post_processing(pred_img, ori_img, enhance, s, smooth_ratio, ksize):
+    ori_yuv_img = cv2.cvtColor(ori_img, cv2.COLOR_RGB2YUV).astype(np.float32)
+    ori_y = np.expand_dims(ori_yuv_img[:,:,0], axis=-1).astype(np.float32)
+    ori_mscn,_,_,_ = mscn(True, ori_img, 7, 0.0000001)
+    _, _, pred_mu, pred_sigma = mscn(True, pred_img.astype(np.float32), 7, 0.0000001)
+    tar_img_Y = ori_mscn * (enhance*pred_sigma + 0.0000001) + pred_mu
+    if smooth_ratio:
+        ratio = (tar_img_Y/255) / ori_y
+        smoothed_ratio = np.expand_dims(cv2.GaussianBlur(ratio, (ksize,ksize), ksize/6), axis=-1)
+        tar_img_Y = ori_y * smoothed_ratio * 255
+    tar_img = (ori_img / (ori_y + 0.0000001)) ** s * tar_img_Y
+    tar_img = tar_img
+    return tar_img
 
+mscn_names = os.listdir(args.input_path + 'test_mscn_input/')
+for mscn_name in mscn_names:
+    mscn_map = cv2.imread(args.input_path + 'test_mscn_input/' + mscn_name)
+    luma_map = cv2.imread(args.input_path + 'test_luma_input/' + mscn_name)    
+    ori_img  = cv2.imread(args.input_path + 'test_orihdr_input/' + mscn_name.replace('png', 'hdr'), flags = cv2.IMREAD_ANYDEPTH)
+    if args.norm_hdr_first:
+        ori_img = (ori_img - np.min(ori_img)) / (np.max(ori_img) - np.min(ori_img))
+        ori_img = cv2.cvtColor(np.float32(ori_img), cv2.COLOR_BGR2RGB)
     ori_mscn,ori_mscn_norm,_,_ = mscn(True, ori_img, 7, 0.0000001)  
     
     result = test_big_size(ori_mscn, mscn_map, luma_map, prompt, a_prompt, n_prompt, num_samples, image_resolution, ddim_steps, guess_mode, strength, scale, seed, eta)
-
+    if not args.norm_hdr_first:
+        ori_img = (ori_img - np.min(ori_img)) / (np.max(ori_img) - np.min(ori_img))
+        ori_img = cv2.cvtColor(np.float32(ori_img), cv2.COLOR_BGR2RGB)
+    if args.post_processing==1:
+        result = simple_post_processing(result, ori_img, 1, 0.5, False, 7)
+    elif args.post_processing==2:
+        result = simple_post_processing(result, ori_img, 1, 0.5, True, 7)    
     result = cv2.cvtColor(np.float32(result), cv2.COLOR_RGB2BGR)
-    cv2.imwrite('./test_imgs/test_output/' + mscn_name, result)
+    cv2.imwrite(args.output_path + mscn_name, result)
     
     print("========== single image processing done. ==========")
